@@ -6,6 +6,9 @@ import numpy as np
 from skimage.feature import hog
 from sklearn.neighbors import KNeighborsClassifier
 from scipy.misc.pilutil import imresize
+from keras.models import Sequential
+from keras.layers import Dense
+import pandas as pd
 
 
 def split_2d(img, cell_size, flatten=True):
@@ -76,10 +79,10 @@ def get_digits(contours):
     return rects_final
 
 
-def process_test_image(fn, model):
-    print('loading "{0} for digit recognition" ...'.format(fn))
-    im = cv2.imread(fn)
-    im_original = cv2.imread(fn)
+def process_test_image(dataset, model, model_type='dnn'):
+    logging.getLogger('regular.time').info('loading "{0} for digit recognition" ...'.format(dataset))
+    im = cv2.imread(dataset)
+    im_original = cv2.imread(dataset)
 
     blank_image = np.zeros((im.shape[0], im.shape[1], 3), np.uint8)
     blank_image.fill(255)
@@ -124,7 +127,10 @@ def process_test_image(fn, model):
 
         pred = model.predict(hog_img_data)
 
-        _ = cv2.putText(im, str(int(pred[0])), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 3)
+        if pred.shape[1] == 10:
+            pred = pred.ravel()
+
+        _ = cv2.putText(im, str(pd.Series(pred).idxmax()), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 3)
         _ = cv2.putText(blank_image, str(int(pred[0])), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 0, 0), 5)
 
     cv2.imwrite("original_overlay.png", im)
@@ -142,6 +148,7 @@ def main():
     required.add_argument('-te', '--test_image', help='image to evaluate', required=True)
     optional.add_argument('-l', '--log', dest="logLevel", choices=['DEBUG', 'debug', 'INFO', 'info', 'ERROR', 'error'],
                           help='Argument use to set the logging level')
+    optional.add_argument('-knn', '--knn', help='flag to run knn', action='store_true')
 
     args = parser.parse_args()
 
@@ -151,13 +158,24 @@ def main():
 
     digits, y_train = load_digits(args.train_image)
 
-    logging.getLogger('regular.time').info('training model ...')
     x_train = pixels_to_hog_20(digits)
 
-    knn = KNeighborsClassifier()
-    knn.fit(x_train, y_train)
+    num_pixels = x_train.shape[1]
+    num_classes = len(np.unique(y_train))
 
-    process_test_image(args.test_image, knn)
+    if args.knn:
+        logging.getLogger('regular.time').info('training knn model')
+        model = KNeighborsClassifier()
+        model.fit(x_train, y_train)
+    else:
+        logging.getLogger('regular.time').info('training NN model')
+        model = Sequential()
+        model.add(Dense(num_pixels, input_dim=num_pixels, kernel_initializer='normal', activation='relu'))
+        model.add(Dense(num_classes, kernel_initializer='normal', activation='softmax'))
+        # Compile model
+        model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+    process_test_image(dataset=args.test_image, model=model, model_type=args.knn)
 
 
 if __name__ == '__main__':

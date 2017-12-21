@@ -5,3 +5,4 @@ digits.png
 *.log
 original_overlay.png
 utils/__pycache__/
+final_digits.png
