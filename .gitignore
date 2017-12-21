@@ -1,2 +1,7 @@
 datasets/
 .idea/*
+.DS_Store
+digits.png
+*.log
+original_overlay.png
+utils/__pycache__/

@@ -1,98 +1,164 @@
+import argparse
+import logging
+from utils.logger import logger_initialization
 import cv2
-
-## WORKS
-img_name = 'datasets/GO1_morph_2.png'
-# img = cv2.imread(img_name)
-# mser = cv2.MSER_create()
-# gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-# gray_img = img.copy()
-#
-# regions = mser.detectRegions(gray, None)
-# print('len of regions = {0}'.format(len(regions)))
-# hulls = [cv2.convexHull(p.reshape(-1, 1, 2)) for p in regions[760:794]]
-# cv2.polylines(gray_img, hulls, 1, (0, 0, 255), 2)
-# cv2.imwrite('datasets/GO1_morph_2_detect_2.png', gray_img)
-
-### WORKS WELL
-# import numpy as np
-#
-# mser = cv2.MSER_create()
-# img = cv2.imread(img_name)
-# gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-# vis = img.copy()
-# regions = mser.detectRegions(gray, None)
-#
-# hulls = [cv2.convexHull(p.reshape(-1, 1, 2)) for p in regions]
-#
-# cv2.polylines(vis, hulls, 1, (0, 255, 0))
-#
-# cv2.imshow('img', vis)
-#
-# mask = np.zeros((img.shape[0], img.shape[1], 1), dtype=np.uint8)
-#
-# for contour in hulls:
-#
-#     cv2.drawContours(mask, [contour], -1, (255, 255, 255), -1)
-#
-# #this is used to find only text regions, remaining are ignored
-# text_only = cv2.bitwise_and(img, img, mask=mask)
-#
-# cv2.imshow("text only", text_only)
-#
-# cv2.imwrite('datasets/textonly.png', text_only)
+import numpy as np
+from skimage.feature import hog
+from sklearn.neighbors import KNeighborsClassifier
+from scipy.misc.pilutil import imresize
 
 
-
-import cv2
-
-
-def captch_ex(file_name):
-    img = cv2.imread(file_name)
-
-    img_final = cv2.imread(file_name)
-    img2gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    ret, mask = cv2.threshold(img2gray, 180, 255, cv2.THRESH_BINARY)
-    image_final = cv2.bitwise_and(img2gray, img2gray, mask=mask)
-    ret, new_img = cv2.threshold(image_final, 180, 255, cv2.THRESH_BINARY)  # for black text , cv.THRESH_BINARY_INV
-    '''
-            line  8 to 12  : Remove noisy portion 
-    '''
-    kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3,
-                                                         3))  # to manipulate the orientation of dilution , large x means horizonatally dilating  more, large y means vertically dilating more
-    dilated = cv2.dilate(new_img, kernel, iterations=9)  # dilate , more the iteration more the dilation
-
-    # for cv2.x.x
-
-    _, contours, hierarchy = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)  # get contours
-
-    # for cv3.x.x comment above line and uncomment line below
-
-    #image, contours, hierarchy = cv2.findContours(dilated,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
+def split_2d(img, cell_size, flatten=True):
+    height, width = img.shape[:2]
+    size_x, size_y = cell_size
+    cells = [np.hsplit(row, width // size_x) for row in np.vsplit(img, height // size_y)]
+    cells = np.array(cells)
+    if flatten:
+        cells = cells.reshape(-1, size_y, size_x)
+    return cells
 
 
-    for contour in contours:
-        # get rectangle bounding contour
-        [x, y, w, h] = cv2.boundingRect(contour)
+def load_digits(fn):
+    # size of each digit is SZ x SZ
+    digit_dimension = 20
+    # 0-9
+    number_class = 10
 
-        # Don't plot small false positives that aren't text
-        if w < 35 and h < 35:
-            continue
-
-        # draw rectangle around contour on original image
-        cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 255), 2)
-
-        '''
-        #you can crop image and send to OCR  , false detected will return no text :)
-        cropped = img_final[y :y +  h , x : x + w]
-
-        s = file_name + '/crop_' + str(index) + '.jpg' 
-        cv2.imwrite(s , cropped)
-        index = index + 1
-
-        '''
-    # write original image with added contours to disk
-    cv2.imshow('datasets/imageresults.png', img)
-    cv2.waitKey()
+    print('loading "{0} for training" ...'.format(fn))
+    digits_img = cv2.imread(fn, 0)
+    digits = split_2d(digits_img, (digit_dimension, digit_dimension))
+    labels = np.repeat(np.arange(number_class), len(digits) / number_class)
+    # 2500 samples in the digits.png so repeat 0-9 2500/10(0-9 - no. of classes) times.
+    return digits, labels
 
 
-captch_ex(img_name)
+def pixels_to_hog_20(pixel_array):
+    hog_features_data = list()
+    for img in pixel_array:
+        # img = 20x20
+        fd = hog(img, orientations=9, pixels_per_cell=(10, 10), cells_per_block=(1, 1), visualise=False,
+                 block_norm='L1')
+        hog_features_data.append(fd)
+    hog_features = np.array(hog_features_data, 'float64')
+    return np.float32(hog_features)
+
+
+def contains(r1, r2):
+    r1_x1 = r1[0]
+    r1_y1 = r1[1]
+    r2_x1 = r2[0]
+    r2_y1 = r2[1]
+
+    r1_x2 = r1[0] + r1[2]
+    r1_y2 = r1[1] + r1[3]
+    r2_x2 = r2[0] + r2[2]
+    r2_y2 = r2[1] + r2[3]
+
+    # does r1 contain r2?
+    return r1_x1 < r2_x1 < r2_x2 < r1_x2 and r1_y1 < r2_y1 < r2_y2 < r1_y2
+
+
+def get_digits(contours):
+    digit_rects = [cv2.boundingRect(ctr) for ctr in contours]
+    rects_final = digit_rects[:]
+
+    for r in digit_rects:
+        x, y, w, h = r
+        if w < 15 and h < 15:  # too small, remove it
+            rects_final.remove(r)
+
+    for r1 in digit_rects:
+        for r2 in digit_rects:
+            if (r1[1] != 1 and r1[1] != 1) and (r2[1] != 1 and r2[1] != 1):
+                # if the rectangle is not the page-bounding rectangle,
+                if contains(r1, r2) and (r2 in rects_final):
+                    rects_final.remove(r2)
+    return rects_final
+
+
+def process_test_image(fn, model):
+    print('loading "{0} for digit recognition" ...'.format(fn))
+    im = cv2.imread(fn)
+    im_original = cv2.imread(fn)
+
+    blank_image = np.zeros((im.shape[0], im.shape[1], 3), np.uint8)
+    blank_image.fill(255)
+
+    imgray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+
+    kernel = np.ones((5, 5), np.uint8)
+
+    ret, thresh = cv2.threshold(imgray, 127, 255, 0)
+
+    thresh = cv2.erode(thresh, kernel, iterations=1)
+    thresh = cv2.dilate(thresh, kernel, iterations=1)
+    thresh = cv2.erode(thresh, kernel, iterations=1)
+
+    _, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+
+    digits_rect = get_digits(contours)  # rectangles of bounding the digits in user image
+
+    for rect in digits_rect:
+        x, y, w, h = rect
+        _ = cv2.rectangle(im, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+        im_digit = im_original[y: y + h, x: x + w]
+        sz = 28
+        im_digit = imresize(im_digit, (sz, sz))
+
+        for i in range(sz):  # need to remove border pixels
+            im_digit[i, 0] = 255
+            im_digit[i, 1] = 255
+            im_digit[0, i] = 255
+            im_digit[1, i] = 255
+
+        thresh = 210
+        im_digit = cv2.cvtColor(im_digit, cv2.COLOR_BGR2GRAY)
+        im_digit = cv2.threshold(im_digit, thresh, 255, cv2.THRESH_BINARY)[1]
+        # im_digit = cv2.adaptiveThreshold(im_digit,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C ,cv2.THRESH_BINARY,11,2)
+        im_digit = (255 - im_digit)
+
+        im_digit = imresize(im_digit, (20, 20))
+
+        hog_img_data = pixels_to_hog_20([im_digit])
+
+        pred = model.predict(hog_img_data)
+
+        _ = cv2.putText(im, str(int(pred[0])), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 3)
+        _ = cv2.putText(blank_image, str(int(pred[0])), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 0, 0), 5)
+
+    cv2.imwrite("original_overlay.png", im)
+    cv2.imwrite("final_digits.png", blank_image)
+    cv2.destroyAllWindows()
+
+
+def main():
+    # get the the path for the input file argument
+    parser = argparse.ArgumentParser()
+    parser._action_groups.pop()
+    required = parser.add_argument_group('required arguments')
+    optional = parser.add_argument_group('optional arguments')
+    required.add_argument('-tr', '--train_image', help='image used for training the algorithm', required=True)
+    required.add_argument('-te', '--test_image', help='image to evaluate', required=True)
+    optional.add_argument('-l', '--log', dest="logLevel", choices=['DEBUG', 'debug', 'INFO', 'info', 'ERROR', 'error'],
+                          help='Argument use to set the logging level')
+
+    args = parser.parse_args()
+
+    logger_initialization(log_level=args.logLevel)
+
+    logging.getLogger('regular.time').info('starting running handwritten-notes script')
+
+    digits, y_train = load_digits(args.train_image)
+
+    logging.getLogger('regular.time').info('training model ...')
+    x_train = pixels_to_hog_20(digits)
+
+    knn = KNeighborsClassifier()
+    knn.fit(x_train, y_train)
+
+    process_test_image(args.test_image, knn)
+
+
+if __name__ == '__main__':
+    main()
