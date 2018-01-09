@@ -171,7 +171,7 @@ def main():
         logging.getLogger('regular.time').info('training NN model')
         model = Sequential()
         model.add(Dense(num_pixels, input_dim=num_pixels, kernel_initializer='normal', activation='relu'))
-        model.add(Dense(num_classes, kernel_initializer='normal', activation='softmax'))
+        model.add(Dense(num_classes, kernel_initializer='normal', activation='softmax'))   
         # Compile model
         model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
 
